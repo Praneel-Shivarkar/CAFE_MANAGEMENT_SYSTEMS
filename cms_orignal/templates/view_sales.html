@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>View Sales</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="p-4 bg-light">
+  <div class="container">
+    <div class="card p-4 shadow-sm">
+      <h4 class="mb-4">Total Sales Report</h4>
+      <table class="table table-striped">
+        <thead>
+          <tr><th>Customer</th><th class="text-end">Total (₹)</th></tr>
+        </thead>
+        <tbody>
+          {% for user, bills in sales.items() %}
+          <tr>
+            <td>{{ user }}</td>
+            <td class="text-end">{{ bills | sum }}</td>
+
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <a href="{{ url_for('home') }}" class="btn btn-secondary">← Back to Dashboard</a>
+    </div>
+  </div>
+</body>
+</html>
