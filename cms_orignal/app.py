@@ -1,26 +1,18 @@
 from flask import Flask, request, redirect, url_for, render_template, session
-import json
 import os
+from flask_sqlalchemy import SQLAlchemy
+from dotenv import load_dotenv
 
 app = Flask(__name__)
 app.secret_key = "cafesecret"
+load_dotenv()
 
-# File paths
-sales_file = 'sales_data.json'
-customers_file = 'customers_data.json'
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv("DATABASE_URL")
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# Load persistent data
-if os.path.exists(sales_file):
-    with open(sales_file, 'r') as f:
-        sales = json.load(f)
-else:
-    sales = {}
+db = SQLAlchemy(app)
 
-if os.path.exists(customers_file):
-    with open(customers_file, 'r') as f:
-        customers = json.load(f)
-else:
-    customers = {}
+
 
 # Menu items
 menu = {
@@ -44,21 +36,43 @@ users = {
     "admin": {"password": "admin123", "role": "admin"},
     "waiter": {"password": "waiter123", "role": "waiter"}
 }
-users.update({u: {"password": p, "role": "customer"} for u, p in customers.items()})
+
+
+class Customer(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(100), unique=True, nullable=False)
+    password = db.Column(db.String(100), nullable=False)
+
+class Sale(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    customer_username = db.Column(db.String(100), nullable=False)
+    total_amount = db.Column(db.Float, nullable=False)
 
 @app.route('/', methods=['GET', 'POST'])
 def login():
     error = None
+
     if request.method == 'POST':
         u = request.form['username']
         p = request.form['password']
+
+        # Check predefined users (admin, waiter)
         if u in users and users[u]['password'] == p:
             session['user'] = u
             session['role'] = users[u]['role']
             session['order'] = []
             return redirect(url_for('home'))
-        else:
-            error = "Invalid username or password"
+
+        # Check database customers
+        customer = Customer.query.filter_by(username=u).first()
+        if customer and customer.password == p:
+            session['user'] = u
+            session['role'] = "customer"
+            session['order'] = []
+            return redirect(url_for('home'))
+
+        error = "Invalid username or password"
+
     return render_template('login.html', error=error)
 
 @app.route('/home')
@@ -93,13 +107,19 @@ def order():
         elif 'generate_bill' in request.form:
             total = sum(p for _, _, p in order_list)
             user = session['user']
-            if user not in sales:
-                sales[user] = []
-            sales[user].append(total)
-            with open(sales_file, 'w') as f:
-                json.dump(sales, f)
+
+    # Save sale in database
+            new_sale = Sale(
+            customer_username=user,
+            total_amount=total
+        )
+
+            db.session.add(new_sale)
+            db.session.commit()
+
             temp = list(order_list)
             session['order'] = []
+
             return render_template('bill.html', bill=temp, total=total)
 
     total = sum(p for _, _, p in order_list)
@@ -109,21 +129,35 @@ def create_customer():
     if request.method == 'POST':
         uname = request.form['username']
         pword = request.form['password']
-        if uname in customers:
+
+        # Check if user already exists in database
+        existing_user = Customer.query.filter_by(username=uname).first()
+
+        if existing_user:
             return "Username already exists."
-        customers[uname] = pword
-        with open(customers_file, 'w') as f:
-            json.dump(customers, f)
-        users[uname] = {"password": pword, "role": "customer"}
+
+        # Create new customer
+        new_customer = Customer(username=uname, password=pword)
+        db.session.add(new_customer)
+        db.session.commit()
+
         return redirect(url_for('home'))
+
     return render_template('create_customer.html')
-
-
 @app.route('/view-sales')
 def view_sales():
     if session.get('role') != 'admin':
         return redirect(url_for('home'))
-    return render_template('view_sales.html', sales=sales)
+
+    all_sales = Sale.query.all()
+    sales_data = {}
+
+    for sale in all_sales:
+        if sale.customer_username not in sales_data:
+            sales_data[sale.customer_username] = []
+        sales_data[sale.customer_username].append(sale.total_amount)
+
+    return render_template('view_sales.html', sales=sales_data)
 
 import json
 
@@ -138,30 +172,29 @@ def read_sales():
 def clear_sales():
     if session.get('role') != 'admin':
         return redirect(url_for('home'))
-    sales.clear()
-    with open(sales_file, 'w') as f:
-        json.dump(sales, f)
+
+    Sale.query.delete()
+    db.session.commit()
+
     return redirect(url_for('home'))
 
 @app.route('/view_customer_bill', methods=['GET', 'POST'])
 def view_customer_bill():
-    # 'sales' is the global dict you loaded at startup
     customer_name = None
+    customer_sales = []
 
     if request.method == 'POST':
-        # grab the raw input and strip whitespace
         name_in = request.form.get('customer_name', '').strip()
-        # do a case‐insensitive match against your sales keys
-        for real_name in sales:
-            if real_name.lower() == name_in.lower():
-                customer_name = real_name
-                break
 
-    # render the same template, passing sales + possibly matched name
-    return render_template('view_customer_bill.html',
-                           sales=sales,
-                           customer_name=customer_name)
+        # Get all sales for this customer from DB
+        customer_sales = Sale.query.filter_by(customer_username=name_in).all()
+        customer_name = name_in
 
+    return render_template(
+        'view_customer_bill.html',
+        customer_name=customer_name,
+        customer_sales=customer_sales
+    )
 
 
 @app.route('/logout')
@@ -169,5 +202,7 @@ def logout():
     session.clear()
     return redirect(url_for('login'))
 
-if __name__ == '__main__':
+if __name__ == "__main__":
+    with app.app_context():
+        db.create_all()
     app.run(debug=True)
